@@ -1,98 +1,133 @@
-import * as Device from 'expo-device';
-import { Platform, StyleSheet } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useEffect, useRef, useState } from 'react';
+import { FlatList, StyleSheet, View } from 'react-native';
+import { Stack, useRouter } from 'expo-router';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AnimatedIcon } from '@/components/animated-icon';
-import { HintRow } from '@/components/hint-row';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
+import { HeaderButton } from '@/components/ui/header-button';
+import { Icon } from '@/components/ui/icon';
+import { Text } from '@/components/ui/text';
+import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
+import { useChat, type ChatMessage } from '@/features/chat/chat-store';
+import { Composer } from '@/features/chat/components/composer';
+import { EmptyState } from '@/features/chat/components/empty-state';
+import { MessageBubble } from '@/features/chat/components/message-bubble';
+import { ModeSelector } from '@/features/chat/components/mode-selector';
+import { TypingIndicator } from '@/features/chat/components/typing-indicator';
+import { MODES } from '@/features/chat/modes';
+import { useTheme } from '@/hooks/use-theme';
 
-function getDevMenuHint() {
-  if (Platform.OS === 'web') {
-    return <ThemedText type="small">use browser devtools</ThemedText>;
+export default function ChatScreen() {
+  const router = useRouter();
+  const theme = useTheme();
+  const insets = useSafeAreaInsets();
+  const chat = useChat();
+  const [draft, setDraft] = useState('');
+  const listRef = useRef<FlatList<ChatMessage>>(null);
+  const messages = chat.active?.messages ?? [];
+
+  // New user message → show the typing indicator at the bottom. New reply → show
+  // the top of the reply card, so the corrected sentence is visible first.
+  const lastMessage = messages.at(-1);
+  useEffect(() => {
+    if (!lastMessage) return;
+    const timer = setTimeout(() => {
+      if (lastMessage.role === 'assistant') {
+        listRef.current?.scrollToIndex({ index: messages.length - 1, viewPosition: 0, viewOffset: Spacing.two });
+      } else {
+        listRef.current?.scrollToEnd({ animated: true });
+      }
+    }, 50);
+    return () => clearTimeout(timer);
+  }, [lastMessage, messages.length]);
+
+  function send() {
+    if (!draft.trim() || chat.isSending) return;
+    chat.send(draft);
+    setDraft('');
   }
-  if (Device.isDevice) {
-    return (
-      <ThemedText type="small">
-        shake device or press <ThemedText type="code">m</ThemedText> in terminal
-      </ThemedText>
-    );
-  }
-  const shortcut = Platform.OS === 'android' ? 'cmd+m (or ctrl+m)' : 'cmd+d';
+
   return (
-    <ThemedText type="small">
-      press <ThemedText type="code">{shortcut}</ThemedText>
-    </ThemedText>
-  );
-}
-
-export default function HomeScreen() {
-  return (
-    <ThemedView style={styles.container}>
-      <SafeAreaView style={styles.safeArea}>
-        <ThemedView style={styles.heroSection}>
-          <AnimatedIcon />
-          <ThemedText type="title" style={styles.title}>
-            Welcome to&nbsp;Expo
-          </ThemedText>
-        </ThemedView>
-
-        <ThemedText type="code" style={styles.code}>
-          get started
-        </ThemedText>
-
-        <ThemedView type="backgroundElement" style={styles.stepContainer}>
-          <HintRow
-            title="Try editing"
-            hint={<ThemedText type="code">src/app/index.tsx</ThemedText>}
+    <>
+      <Stack.Screen
+        options={{
+          headerLeft: () => (
+            <HeaderButton
+              icon={{ ios: 'clock.arrow.circlepath]ffr', android: 'history', web: 'history' }}
+              label="History"
+              onPress={() => router.push('/history')}
+            />
+          ),
+          headerRight: () => (
+            <View style={styles.headerActions}>
+              <HeaderButton
+                icon={{ ios: 'square.and.pencil', android: 'edit_square', web: 'edit_square' }}
+                label="New chat"
+                onPress={chat.newChat}
+              />
+              <HeaderButton
+                icon={{ ios: 'gearshape', android: 'settings', web: 'settings' }}
+                label="Settings"
+                onPress={() => router.push('/settings')}
+              />
+            </View>
+          ),
+        }}
+      />
+      <KeyboardAvoidingView behavior="padding" automaticOffset style={styles.flex}>
+        <View style={styles.content}>
+          {chat.isPreview && (
+            <View style={[styles.banner, { backgroundColor: theme.warningMuted }]}>
+              <Icon name={{ ios: 'info.circle', android: 'info', web: 'info' }} size={13} color="warning" />
+              <Text variant="smallStrong" color="warning" numberOfLines={1} style={styles.bannerText}>
+                Preview mode · replies are samples, not AI
+              </Text>
+            </View>
+          )}
+          <ModeSelector value={chat.mode} onChange={chat.setMode} />
+          <FlatList
+            ref={listRef}
+            style={styles.flex}
+            data={messages}
+            keyExtractor={(m) => m.id}
+            renderItem={({ item }) => <MessageBubble message={item} onRetry={chat.retry} />}
+            contentContainerStyle={[styles.list, messages.length === 0 && styles.flexGrow]}
+            ListEmptyComponent={<EmptyState mode={chat.mode} onPick={setDraft} />}
+            ListFooterComponent={chat.isSending ? <TypingIndicator /> : undefined}
+            onScrollToIndexFailed={() => listRef.current?.scrollToEnd({ animated: true })}
+            keyboardDismissMode="interactive"
+            keyboardShouldPersistTaps="handled"
           />
-          <HintRow title="Dev tools" hint={getDevMenuHint()} />
-          <HintRow
-            title="Fresh start"
-            hint={<ThemedText type="code">npm run reset-project</ThemedText>}
-          />
-        </ThemedView>
-
-        {Platform.OS === 'web' && <WebBadge />}
-      </SafeAreaView>
-    </ThemedView>
+          <View style={{ paddingBottom: insets.bottom }}>
+            <Composer
+              value={draft}
+              onChange={setDraft}
+              onSend={send}
+              placeholder={MODES[chat.mode].placeholder}
+              busy={chat.isSending}
+            />
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
+  flex: { flex: 1 },
+  flexGrow: { flexGrow: 1 },
+  content: { flex: 1, width: '100%', maxWidth: MaxContentWidth, alignSelf: 'center' },
+  headerActions: { flexDirection: 'row', gap: Spacing.three },
+  banner: {
     flexDirection: 'row',
-  },
-  safeArea: {
-    flex: 1,
-    paddingHorizontal: Spacing.four,
     alignItems: 'center',
-    gap: Spacing.three,
-    paddingBottom: BottomTabInset + Spacing.three,
-    maxWidth: MaxContentWidth,
-  },
-  heroSection: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    flex: 1,
-    paddingHorizontal: Spacing.four,
-    gap: Spacing.four,
-  },
-  title: {
-    textAlign: 'center',
-  },
-  code: {
-    textTransform: 'uppercase',
-  },
-  stepContainer: {
-    gap: Spacing.three,
-    alignSelf: 'stretch',
+    alignSelf: 'center',
+    gap: Spacing.one + 2,
+    marginTop: Spacing.two,
     paddingHorizontal: Spacing.three,
-    paddingVertical: Spacing.four,
-    borderRadius: Spacing.four,
+    paddingVertical: Spacing.one + 2,
+    borderRadius: Radius.pill,
   },
+  bannerText: { flexShrink: 1 },
+  list: { gap: Spacing.four, padding: Spacing.four },
 });
